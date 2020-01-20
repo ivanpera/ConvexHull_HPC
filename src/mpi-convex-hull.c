@@ -284,12 +284,24 @@ void convex_hull(int const rank, int const size, const points_t *pset, points_t 
             }
         }
         sendBuf = &next;
-        MPI_Allgather(sendBuf, 1, MPI_INT, recvBuf, 1, MPI_INT, MPI_COMM_WORLD);
-        for (j = 0; j < size; j++) {
-            if (LEFT == turn(p[cur], p[next], p[recvBuf[j]])) {
-                next = recvBuf[j];
+        
+        
+        // MPI_Allgather(sendBuf, 1, MPI_INT, recvBuf, 1, MPI_INT, MPI_COMM_WORLD);
+        // for (j = 0; j < size; j++) {
+        //     if (LEFT == turn(p[cur], p[next], p[recvBuf[j]])) {
+        //         next = recvBuf[j];
+        //     }
+        // }
+
+        MPI_Gather(sendBuf, 1, MPI_INT, recvBuf, 1, MPI_INT, 0, MPI_COMM_WORLD);
+        if (rank == 0) {
+            for (j = 0; j < size; j++) {
+                if (LEFT == turn(p[cur], p[next], p[recvBuf[j]])) {
+                    next = recvBuf[j];
+                }
             }
         }
+        MPI_Bcast(&next, 1, MPI_INT, 0, MPI_COMM_WORLD);
         //gather all the localNext indexes (indices?) in root recvbuf -> no need to have a dedicated type
         //linear search of global next
 
