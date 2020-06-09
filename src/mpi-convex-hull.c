@@ -57,6 +57,7 @@
 #include <math.h>
 #include <mpi.h>
 #include <limits.h>
+#include <string.h>
 
 #ifndef M_PI
 #define M_PI 3.14159265358979323846
@@ -88,7 +89,7 @@ void read_input( FILE *f, points_t *pset )
     char buf[1024];
     int i, dim, npoints;
     point_t *points;
-    
+
     if ( 1 != fscanf(f, "%d", &dim) ) {
         fprintf(stderr, "FATAL: can not read dimension\n");
         exit(EXIT_FAILURE);
@@ -169,7 +170,6 @@ int turn(const point_t p0, const point_t p1, const point_t p2)
     /*
       This function returns the correct result (COLLINEAR) also in the
       following cases:
-      
       - p0==p1==p2
       - p0==p1
       - p1==p2
@@ -186,50 +186,12 @@ int turn(const point_t p0, const point_t p1, const point_t p2)
     }
 }
 
-/**
- * Get the clockwise angle between the line p0p1 and the vector p1p2 
- *
- *         .
- *        . 
- *       .--+ (this angle) 
- *      .   |    
- *     .    V
- *    p1--------------p2
- *    /
- *   /
- *  /
- * p0
- *
- * The function is not used in this program, but it might be useful.
- */
-double cw_angle(const point_t p0, const point_t p1, const point_t p2)
-{
-    const double x1 = p2.x - p1.x;
-    const double y1 = p2.y - p1.y;    
-    const double x2 = p1.x - p0.x;
-    const double y2 = p1.y - p0.y;
-    const double dot = x1*x2 + y1*y2;
-    const double det = x1*y2 - y1*x2;
-    const double result = atan2(det, dot);
-    return (result >= 0 ? result : 2*M_PI + result);
-}
-
+/*
+    Check if the provided condition is true. If not, gracefully aborts the execution
+*/
 void myAssert(int const condition) {
     if(!condition) {
         MPI_Abort(MPI_COMM_WORLD, 1);
-    }
-}
-
-void getIndices(int * const start, int* const end, int const rank, int const nWorkers, int const n) {
-    //Method taken from: https://stackoverflow.com/questions/15658145/how-to-share-work-roughly-evenly-between-processes-in-mpi-despite-the-array-size
-    int const count = n / nWorkers;
-    int const remainder = n % nWorkers;
-    if (rank < remainder) {
-        *start = rank * (count + 1);
-        *end  = *start + count;
-    } else {
-        *start = rank * count + remainder;
-        *end = *start + (count - 1);
     }
 }
 
@@ -241,80 +203,84 @@ void getIndices(int * const start, int* const end, int const rank, int const nWo
 void convex_hull(int const rank, int const size, const points_t *pset, points_t *hull)
 {
     const int n = pset->n;
+    int const start = (rank * n)/size, end = ((rank + 1) * n)/size;
     const point_t *p = pset->p;
     int i, j;
     int cur, next, leftmost;
+    int *sendBuf, *recvBuf;
+    //hull_tag[i] = 0 if the i-th point is not currently considered part of the hull, 0 otherwise
+    int hull_tag[n];
+    //buffer in which to hold the results of processes operations
+    recvBuf = (int*) malloc(sizeof(int) * size);
+    memset(hull_tag, 0, n * sizeof(int));
+    if(rank == 0) {
+        /* There can be at most n points in the convex hull. At the end of
+        this function we trim the excess space. */
+        hull->n = 0;
+        hull->p = (point_t*)malloc(n * sizeof(*(hull->p))); assert(hull->p);
+    }
 
-    hull->n = 0;
-    /* There can be at most n points in the convex hull. At the end of
-       this function we trim the excess space. */
-    hull->p = (point_t*)malloc(n * sizeof(*(hull->p))); assert(hull->p);
-    
     /* Identify the leftmost point p[leftmost] */
     leftmost = 0;
-    for (i = 1; i<n; i++) {
+    for (i = start; i < end; i++) {
         if (p[i].x < p[leftmost].x) {
             leftmost = i;
         }
     }
+    sendBuf = &leftmost;
+
+    MPI_Allgather(sendBuf, 1, MPI_INT, recvBuf, 1, MPI_INT, MPI_COMM_WORLD);
+    for (j = 0; j < size; j++) {
+        if (p[recvBuf[j]].x < p[leftmost].x) {
+            leftmost = recvBuf[j];
+        }
+    }
+
     cur = leftmost;
-    
+
     /* Main loop of the Gift Wrapping algorithm. This is where most of
        the time is spent; therefore, this is the block of code that
        must be parallelized. */
 
-    //Comm rank
-    //Comm size
-    int start, end;
-    int *sendBuf, *recvBuf;
-    recvBuf = (int*) malloc(sizeof(int) * size);
     do {
         /* Add the current vertex to the hull */
-        myAssert(hull->n < n);
-        hull->p[hull->n] = p[cur];
-        hull->n++;
-
-        /* Search for the next vertex */
-        next = (cur + 1) % n;
-        getIndices(&start, &end, rank, size, n);
-        //find localNext in range [start, end]
-        for (j = start; j <= end; j++) {
-            if (LEFT == turn(p[cur], p[next], p[j])) {
-                next = j;
-            }
+        if(rank == 0) {
+            myAssert(hull->n < n);
+            hull->p[hull->n] = p[cur];
+            hull->n++;
         }
-        sendBuf = &next;
-        
-        
-        // MPI_Allgather(sendBuf, 1, MPI_INT, recvBuf, 1, MPI_INT, MPI_COMM_WORLD);
-        // for (j = 0; j < size; j++) {
-        //     if (LEFT == turn(p[cur], p[next], p[recvBuf[j]])) {
-        //         next = recvBuf[j];
-        //     }
-        // }
 
-        MPI_Gather(sendBuf, 1, MPI_INT, recvBuf, 1, MPI_INT, 0, MPI_COMM_WORLD);
-        if (rank == 0) {
-            for (j = 0; j < size; j++) {
-                if (LEFT == turn(p[cur], p[next], p[recvBuf[j]])) {
-                    next = recvBuf[j];
+        /* find localNext in range [start, end] */
+        next = (cur + 1) % n;
+        for (j = start; j < end; j++) {
+            if (hull_tag[j] == 0)
+            {
+                if (LEFT == turn(p[cur], p[next], p[j])) {
+                    next = j;
                 }
             }
         }
-        MPI_Bcast(&next, 1, MPI_INT, 0, MPI_COMM_WORLD);
-        //gather all the localNext indexes (indices?) in root recvbuf -> no need to have a dedicated type
-        //linear search of global next
+        sendBuf = &next;
 
-        //Broadcast global next vs allGather all localNext and linear search for every process
-        //cur = next
+        /* Process 0 gathers all local next, then finds the global best */
+        MPI_Allgather(sendBuf, 1, MPI_INT, recvBuf, 1, MPI_INT, MPI_COMM_WORLD);
+        for (j = 0; j < size; j++) {
+            if (LEFT == turn(p[cur], p[next], p[recvBuf[j]])) {
+                next = recvBuf[j];
+            }
+        }
+        /* Process 0 broadcasts the global next to the other processes */
 
         myAssert(cur != next);
         cur = next;
+        hull_tag[next] = 1;
     } while (cur != leftmost);
     free(recvBuf);
-    /* Trim the excess space in the convex hull array */
-    hull->p = (point_t*)realloc(hull->p, (hull->n) * sizeof(*(hull->p)));
-    assert(hull->p); 
+    if(rank == 0) {
+        /* Trim the excess space in the convex hull array */
+        hull->p = (point_t*)realloc(hull->p, (hull->n) * sizeof(*(hull->p)));
+        myAssert(hull->p != NULL);
+    }
 }
 
 /**
@@ -371,16 +337,18 @@ int main( int argc, char** argv )
         read_input(stdin, &pset);
     }
 
+    //Only process 0 has information regarding pset, they have to be broadcasted to the other processes
+    //Defining a datatype to map the point_t struct
     MPI_Datatype MPI_point_t;
     MPI_Type_contiguous(2, MPI_DOUBLE, &MPI_point_t);
     MPI_Type_commit(&MPI_point_t);
-    //ONLY PROCESS 0 HAS PSET FILLED: NEED TO BE BROADCASTED
+
     MPI_Bcast(&pset.n, 1, MPI_INT, 0, MPI_COMM_WORLD);
     if (rank != 0) {
         pset.p = (point_t*) malloc(pset.n * sizeof(point_t));
     }
     MPI_Bcast(pset.p, pset.n, MPI_point_t, 0, MPI_COMM_WORLD);
-    
+
     tstart = hpc_gettime();
     convex_hull(rank, size, &pset, &hull);
     elapsed = hpc_gettime() - tstart;
@@ -392,8 +360,8 @@ int main( int argc, char** argv )
         fprintf(stderr, "  Total volume: %f\n\n", hull_volume(&hull));
         fprintf(stderr, "Elapsed time: %f\n\n", elapsed);
         write_hull(stdout, &hull);
+        free_pointset(&pset);
     }
-    free_pointset(&pset);
     free_pointset(&hull);
     MPI_Finalize();
     return EXIT_SUCCESS;    

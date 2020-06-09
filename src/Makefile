@@ -36,7 +36,7 @@ EXE_SERIAL:=convex-hull
 DATAFILES:=ace.in box1k.in box10k.in box100k.in box1M.in circ1k.in circ10k.in circ100k.in gaus100k.in gaus1M.in
 IMAGES:=$(patsubst %.in, %.png, $(DATAFILES))
 EXE:=$(EXE_OMP) $(EXE_MPI) $(EXE_SERIAL) $(EXE_CUDA)
-CFLAGS+=-std=c99 -Wall -Wpedantic -O2 -D_XOPEN_SOURCE=600
+CFLAGS+=-std=c99 -Wall -Wpedantic -O3 -D_XOPEN_SOURCE=600
 LDLIBS+=-lm
 NVCC:=nvcc
 NVCFLAGS+=-Wno-deprecated-gpu-targets
@@ -85,6 +85,13 @@ circ10k.in:
 
 circ100k.in:
 	rbox s 100000 D2 > $@
+
+circ200k.in:
+	rbox s 200000 D2 > $@
+
+circ400k.in:
+	rbox s 400000 D2 > $@
+
 
 %.hull: %.in convex-hull
 	./convex-hull < $< > $@

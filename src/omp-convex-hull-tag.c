@@ -195,33 +195,33 @@ void convex_hull(const points_t *pset, points_t *hull)
 {
     const int n = pset->n;
     const point_t *p = pset->p;
-    int hull_tag[n];
     int i;
+    int tags[n];
     int cur, leftmost;
 
     hull->n = 0;
     /* There can be at most n points in the convex hull. At the end of
        this function we trim the excess space. */
     hull->p = (point_t*)malloc(n * sizeof(*(hull->p))); assert(hull->p);
-
+    
     /* Identify the leftmost point p[leftmost] */
     leftmost = 0;
-    hull_tag[0] = 0;
+    tags[0] = 0;
     for (i = 1; i<n; i++) {
         if (p[i].x < p[leftmost].x) {
             leftmost = i;
         }
-	hull_tag[i] = 0;
+	tags[i] = 0;
     }
     cur = leftmost;
-
+    
     /* Main loop of the Gift Wrapping algorithm. This is where most of
        the time is spent; therefore, this is the block of code that
        must be parallelized. */
     //Array containing the best next node of the n-th thread
     int *local_next;
     int ok = 0;
-#pragma omp parallel default(none) shared(cur, hull_tag, leftmost, hull, local_next, p, ok)
+#pragma omp parallel default(none) shared(tags, cur, leftmost, hull, n, local_next, p, ok)
     {
         int const thread_num = omp_get_num_threads();
         int const thread_id = omp_get_thread_num();
@@ -232,7 +232,7 @@ void convex_hull(const points_t *pset, points_t *hull)
         }
 
         do {
-            //Only one thread updates the shared hull structure
+            //Updating the hull is protected by the "single" statement (instruction?)
 #pragma omp single
             {
                 ok = hull->n < n;
@@ -248,9 +248,9 @@ void convex_hull(const points_t *pset, points_t *hull)
             //Each thread finds the best next node in its subset
 #pragma omp for
                 for(j = 0; j < n; j++) {
-                        if(hull_tag[j] == 0 && LEFT == turn(p[cur], p[local_next[thread_id]], p[j])) {
-                            local_next[thread_id] = j;
-                        }
+                    if(tags[j] == 0 && LEFT == turn(p[cur], p[local_next[thread_id]], p[j])) {
+                        local_next[thread_id] = j;
+                    }
                 }
             //One thread is then responsible for finding the best overall next node between the local next nodes
 #pragma omp single
@@ -264,7 +264,7 @@ void convex_hull(const points_t *pset, points_t *hull)
                     }
                     ok = (cur != next);
                     cur = next;
-		    hull_tag[cur] = 1;
+		    tags[cur] = 1;
                 }
             }
         } while(cur != leftmost && ok);
